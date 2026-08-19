@@ -1,0 +1,227 @@
+trigger:
+  branches:
+    include:
+      - master
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  javaVersion: '11'
+  appDirectory: 'DevOps-Project-01/Java-Login-App'
+  artifactName: 'java-login-app'
+
+stages:
+
+# ============================================================
+# BUILD STAGE
+# ============================================================
+
+- stage: Build
+  displayName: 'Build Java Login Application'
+
+  jobs:
+  - job: MavenBuild
+    displayName: 'Maven Build'
+
+    steps:
+
+    # --------------------------------------------------------
+    # Checkout source
+    # --------------------------------------------------------
+
+    - checkout: self
+      displayName: 'Checkout source code'
+
+    # --------------------------------------------------------
+    # Install Java 11
+    # --------------------------------------------------------
+
+    - task: JavaToolInstaller@0
+      displayName: 'Install Java $(javaVersion)'
+      inputs:
+        versionSpec: '$(javaVersion)'
+        jdkArchitectureOption: 'x64'
+        jdkSourceOption: 'PreInstalled'
+
+    # --------------------------------------------------------
+    # Verify Java and Maven
+    # --------------------------------------------------------
+
+    - script: |
+        echo "Java version:"
+        java -version
+
+        echo ""
+        echo "Maven version:"
+        cd "$(appDirectory)"
+        ./mvnw --version
+      displayName: 'Verify Java and Maven'
+
+    # --------------------------------------------------------
+    # Build application
+    # --------------------------------------------------------
+
+    - script: |
+        cd "$(appDirectory)"
+
+        chmod +x mvnw
+
+        ./mvnw clean package -DskipTests
+      displayName: 'Build Java application'
+
+    # --------------------------------------------------------
+    # Show generated files
+    # --------------------------------------------------------
+
+    - script: |
+        echo "========== BUILD OUTPUT =========="
+        cd "$(appDirectory)"
+
+        find target -type f -maxdepth 2 -print
+
+        echo ""
+        echo "========== TARGET DIRECTORY =========="
+        ls -lah target
+      displayName: 'Verify build output'
+
+    # --------------------------------------------------------
+    # Prepare artifact
+    # --------------------------------------------------------
+
+    - script: |
+        rm -rf "$(Build.ArtifactStagingDirectory)/$(artifactName)"
+
+        mkdir -p "$(Build.ArtifactStagingDirectory)/$(artifactName)"
+
+        cp "$(appDirectory)"/target/*.jar \
+           "$(Build.ArtifactStagingDirectory)/$(artifactName)/" 2>/dev/null || true
+
+        cp "$(appDirectory)"/target/*.war \
+           "$(Build.ArtifactStagingDirectory)/$(artifactName)/" 2>/dev/null || true
+
+        echo "========== ARTIFACT =========="
+        ls -lah "$(Build.ArtifactStagingDirectory)/$(artifactName)"
+      displayName: 'Prepare application artifact'
+
+    # --------------------------------------------------------
+    # Publish artifact to Azure DevOps
+    # --------------------------------------------------------
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Java application artifact'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
+        artifact: '$(artifactName)'
+        publishLocation: 'pipeline'
+
+
+# ============================================================
+# HTTP SERVER STAGE
+# ============================================================
+
+- stage: HTTP
+  displayName: 'HTTP Artifact Access'
+
+  dependsOn: Build
+
+  condition: succeeded()
+
+  jobs:
+  - job: HTTPServer
+    displayName: 'Serve Artifact over HTTP'
+
+    steps:
+
+    # --------------------------------------------------------
+    # Download artifact
+    # --------------------------------------------------------
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download application artifact'
+      inputs:
+        artifact: '$(artifactName)'
+        path: '$(Pipeline.Workspace)/artifact'
+
+    # --------------------------------------------------------
+    # Verify artifact
+    # --------------------------------------------------------
+
+    - script: |
+        echo "========== DOWNLOADED ARTIFACT =========="
+
+        find "$(Pipeline.Workspace)/artifact" -type f -print
+
+        echo ""
+        ls -lah "$(Pipeline.Workspace)/artifact"
+      displayName: 'Verify downloaded artifact'
+
+    # --------------------------------------------------------
+    # Start HTTP server
+    # --------------------------------------------------------
+
+    - script: |
+        cd "$(Pipeline.Workspace)/artifact"
+
+        echo "Starting HTTP server on port 8080..."
+
+        nohup python3 -m http.server 8080 \
+          --bind 0.0.0.0 \
+          > "$(Pipeline.Workspace)/http-server.log" 2>&1 &
+
+        echo $! > "$(Pipeline.Workspace)/http-server.pid"
+
+        sleep 5
+
+        echo "========== HTTP SERVER =========="
+        cat "$(Pipeline.Workspace)/http-server.log" || true
+        echo "================================="
+
+        echo "HTTP server started successfully."
+      displayName: 'Start HTTP server'
+
+    # --------------------------------------------------------
+    # Test HTTP server
+    # --------------------------------------------------------
+
+    - script: |
+        echo "Testing HTTP server..."
+
+        curl -v http://127.0.0.1:8080/
+
+        echo ""
+        echo "HTTP server test successful."
+      displayName: 'Test HTTP access'
+
+    # --------------------------------------------------------
+    # Display artifact URL
+    # --------------------------------------------------------
+
+    - script: |
+        echo ""
+        echo "===================================================="
+        echo "HTTP ARTIFACT SERVER"
+        echo "===================================================="
+        echo ""
+        echo "HTTP server:"
+        echo "http://127.0.0.1:8080/"
+        echo ""
+        echo "Artifact files:"
+        ls -lah "$(Pipeline.Workspace)/artifact"
+        echo ""
+        echo "IMPORTANT:"
+        echo "127.0.0.1 is accessible only from the build agent."
+        echo "The Microsoft-hosted agent is temporary."
+        echo "===================================================="
+      displayName: 'Display HTTP information'
+
+    # --------------------------------------------------------
+    # Keep server alive for testing
+    # --------------------------------------------------------
+
+    - script: |
+        echo "Keeping HTTP server alive for 10 minutes..."
+        sleep 600
+      displayName: 'Keep HTTP server running'
