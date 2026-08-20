@@ -5,223 +5,324 @@ trigger:
 
 pr: none
 
+
+# ============================================================
+# SELF-HOSTED WINDOWS AGENT
+# ============================================================
+
 pool:
-  name: batch13-pool
+  name: 'batch13-pool'
+
+
+# ============================================================
+# VARIABLES
+# ============================================================
 
 variables:
+
+  # Java
   javaVersion: '11'
-  appDirectory: 'DevOps-Project-01/Java-Login-App'
+
+  # Application
+  appDirectory: 'DevOps-Project-01\Java-Login-App'
+
+  # Azure Storage
+  storageAccount: 'vishalsa007'
+  containerName: 'vishalcontainer'
+
+  # Artifact
   artifactName: 'java-login-app'
+
+  # Azure service connection
+  azureServiceConnection: 'batch13-connection'
+
+
+# ============================================================
+# STAGES
+# ============================================================
 
 stages:
 
 # ============================================================
-# BUILD STAGE
+# STAGE 1 - BUILD
 # ============================================================
 
 - stage: Build
   displayName: 'Build Java Login Application'
 
   jobs:
+
   - job: MavenBuild
     displayName: 'Maven Build'
 
     steps:
 
     # --------------------------------------------------------
-    # Checkout source
+    # CHECKOUT
     # --------------------------------------------------------
 
     - checkout: self
       displayName: 'Checkout source code'
 
-    # --------------------------------------------------------
-    # Install Java 11
-    # --------------------------------------------------------
-
-    - task: JavaToolInstaller@0
-      displayName: 'Install Java $(javaVersion)'
-      inputs:
-        versionSpec: '$(javaVersion)'
-        jdkArchitectureOption: 'x64'
-        jdkSourceOption: 'PreInstalled'
 
     # --------------------------------------------------------
-    # Verify Java and Maven
+    # VERIFY JAVA
     # --------------------------------------------------------
 
-    - script: |
-        echo "Java version:"
+    - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "JAVA VERSION"
+        Write-Host "========================================"
+
         java -version
 
-        echo ""
-        echo "Maven version:"
-        cd "$(appDirectory)"
-        ./mvnw --version
+        Write-Host ""
+        Write-Host "========================================"
+        Write-Host "MAVEN VERSION"
+        Write-Host "========================================"
+
+        Set-Location "$(appDirectory)"
+
+        .\mvnw.cmd --version
+
       displayName: 'Verify Java and Maven'
 
-    # --------------------------------------------------------
-    # Build application
-    # --------------------------------------------------------
-
-    - script: |
-        cd "$(appDirectory)"
-
-        chmod +x mvnw
-
-        ./mvnw clean package -DskipTests
-      displayName: 'Build Java application'
 
     # --------------------------------------------------------
-    # Show generated files
+    # MAVEN BUILD
     # --------------------------------------------------------
 
-    - script: |
-        echo "========== BUILD OUTPUT =========="
-        cd "$(appDirectory)"
+    - powershell: |
 
-        find target -type f -maxdepth 2 -print
+        Write-Host "========================================"
+        Write-Host "BUILDING APPLICATION"
+        Write-Host "========================================"
 
-        echo ""
-        echo "========== TARGET DIRECTORY =========="
-        ls -lah target
-      displayName: 'Verify build output'
+        Set-Location "$(appDirectory)"
+
+        .\mvnw.cmd clean package -DskipTests
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Maven build failed."
+            exit 1
+        }
+
+      displayName: 'Maven clean package'
+
 
     # --------------------------------------------------------
-    # Prepare artifact
+    # VERIFY BUILD
     # --------------------------------------------------------
 
-    - script: |
-        rm -rf "$(Build.ArtifactStagingDirectory)/$(artifactName)"
+    - powershell: |
 
-        mkdir -p "$(Build.ArtifactStagingDirectory)/$(artifactName)"
+        Write-Host "========================================"
+        Write-Host "BUILD OUTPUT"
+        Write-Host "========================================"
 
-        cp "$(appDirectory)"/target/*.jar \
-           "$(Build.ArtifactStagingDirectory)/$(artifactName)/" 2>/dev/null || true
+        Set-Location "$(appDirectory)"
 
-        cp "$(appDirectory)"/target/*.war \
-           "$(Build.ArtifactStagingDirectory)/$(artifactName)/" 2>/dev/null || true
+        Write-Host ""
+        Write-Host "Target directory:"
+        Get-ChildItem .\target
 
-        echo "========== ARTIFACT =========="
-        ls -lah "$(Build.ArtifactStagingDirectory)/$(artifactName)"
+        Write-Host ""
+        Write-Host "Generated JAR/WAR files:"
+
+        Get-ChildItem .\target -Include *.jar,*.war -File
+
+      displayName: 'Verify generated artifact'
+
+
+    # --------------------------------------------------------
+    # PREPARE ARTIFACT
+    # --------------------------------------------------------
+
+    - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "PREPARING ARTIFACT"
+        Write-Host "========================================"
+
+        $artifactDirectory = "$(Build.ArtifactStagingDirectory)\$(artifactName)"
+
+        New-Item `
+          -ItemType Directory `
+          -Force `
+          -Path $artifactDirectory | Out-Null
+
+        Set-Location "$(appDirectory)"
+
+        $files = Get-ChildItem .\target -Include *.jar,*.war -File
+
+        if ($files.Count -eq 0) {
+            Write-Error "No JAR or WAR file was generated."
+            exit 1
+        }
+
+        foreach ($file in $files) {
+
+            Copy-Item `
+              $file.FullName `
+              $artifactDirectory `
+              -Force
+
+            Write-Host "Copied: $($file.Name)"
+        }
+
+        Write-Host ""
+        Write-Host "Artifact directory:"
+        Get-ChildItem $artifactDirectory
+
       displayName: 'Prepare application artifact'
 
+
     # --------------------------------------------------------
-    # Publish artifact to Azure DevOps
+    # CREATE ZIP
     # --------------------------------------------------------
 
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish Java application artifact'
-      inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
-        artifact: '$(artifactName)'
-        publishLocation: 'pipeline'
+    - powershell: |
+
+        Write-Host "========================================"
+        Write-Host "CREATING ZIP ARTIFACT"
+        Write-Host "========================================"
+
+        $artifactDirectory = "$(Build.ArtifactStagingDirectory)\$(artifactName)"
+
+        $zipFile = "$(Build.ArtifactStagingDirectory)\$(artifactName)-$(Build.BuildNumber).zip"
+
+        Compress-Archive `
+          -Path "$artifactDirectory\*" `
+          -DestinationPath $zipFile `
+          -Force
+
+        Write-Host ""
+        Write-Host "Created artifact:"
+        Write-Host $zipFile
+
+        Write-Host ""
+        Get-ChildItem "$(Build.ArtifactStagingDirectory)"
+
+      displayName: 'Create ZIP artifact'
 
 
 # ============================================================
-# HTTP SERVER STAGE
+# STAGE 2 - UPLOAD TO AZURE STORAGE
 # ============================================================
 
-- stage: HTTP
-  displayName: 'HTTP Artifact Access'
+- stage: Upload
+  displayName: 'Upload Artifact to Azure Storage'
 
   dependsOn: Build
 
   condition: succeeded()
 
   jobs:
-  - job: HTTPServer
-    displayName: 'Serve Artifact over HTTP'
+
+  - job: UploadArtifact
+    displayName: 'Upload to vishalsa007'
 
     steps:
 
     # --------------------------------------------------------
-    # Download artifact
+    # UPLOAD ZIP TO STORAGE ACCOUNT
     # --------------------------------------------------------
 
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download application artifact'
+    - task: AzureCLI@2
+      displayName: 'Upload Artifact to Azure Blob Storage'
+
       inputs:
-        artifact: '$(artifactName)'
-        path: '$(Pipeline.Workspace)/artifact'
+
+        azureSubscription: '$(azureServiceConnection)'
+
+        scriptType: 'ps'
+
+        scriptLocation: 'inlineScript'
+
+        inlineScript: |
+
+          Write-Host "========================================"
+          Write-Host "AZURE STORAGE UPLOAD"
+          Write-Host "========================================"
+
+          Write-Host "Storage Account : $(storageAccount)"
+          Write-Host "Container       : $(containerName)"
+
+          $artifact = "$(Build.ArtifactStagingDirectory)\$(artifactName)-$(Build.BuildNumber).zip"
+
+          Write-Host ""
+          Write-Host "Artifact:"
+          Write-Host $artifact
+
+          if (!(Test-Path $artifact)) {
+              Write-Error "Artifact not found."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Uploading artifact..."
+
+          az storage blob upload `
+            --account-name "$(storageAccount)" `
+            --container-name "$(containerName)" `
+            --name "$(artifactName)-$(Build.BuildNumber).zip" `
+            --file "$artifact" `
+            --auth-mode login `
+            --overwrite true
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Azure Storage upload failed."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "UPLOAD SUCCESSFUL"
+          Write-Host "========================================"
+
 
     # --------------------------------------------------------
-    # Verify artifact
+    # DISPLAY HTTP URL
     # --------------------------------------------------------
 
-    - script: |
-        echo "========== DOWNLOADED ARTIFACT =========="
+    - task: AzureCLI@2
+      displayName: 'Display Artifact HTTP URL'
 
-        find "$(Pipeline.Workspace)/artifact" -type f -print
+      inputs:
 
-        echo ""
-        ls -lah "$(Pipeline.Workspace)/artifact"
-      displayName: 'Verify downloaded artifact'
+        azureSubscription: '$(azureServiceConnection)'
 
-    # --------------------------------------------------------
-    # Start HTTP server
-    # --------------------------------------------------------
+        scriptType: 'ps'
 
-    - script: |
-        cd "$(Pipeline.Workspace)/artifact"
+        scriptLocation: 'inlineScript'
 
-        echo "Starting HTTP server on port 8080..."
+        inlineScript: |
 
-        nohup python3 -m http.server 8080 \
-          --bind 0.0.0.0 \
-          > "$(Pipeline.Workspace)/http-server.log" 2>&1 &
+          $blobName = "$(artifactName)-$(Build.BuildNumber).zip"
 
-        echo $! > "$(Pipeline.Workspace)/http-server.pid"
+          $url = "https://$(storageAccount).blob.core.windows.net/$(containerName)/$blobName"
 
-        sleep 5
+          Write-Host ""
+          Write-Host "=================================================="
+          Write-Host "ARTIFACT UPLOAD COMPLETED"
+          Write-Host "=================================================="
 
-        echo "========== HTTP SERVER =========="
-        cat "$(Pipeline.Workspace)/http-server.log" || true
-        echo "================================="
+          Write-Host ""
+          Write-Host "Storage Account:"
+          Write-Host "$(storageAccount)"
 
-        echo "HTTP server started successfully."
-      displayName: 'Start HTTP server'
+          Write-Host ""
+          Write-Host "Container:"
+          Write-Host "$(containerName)"
 
-    # --------------------------------------------------------
-    # Test HTTP server
-    # --------------------------------------------------------
+          Write-Host ""
+          Write-Host "Artifact:"
+          Write-Host $blobName
 
-    - script: |
-        echo "Testing HTTP server..."
+          Write-Host ""
+          Write-Host "HTTP / HTTPS URL:"
+          Write-Host $url
 
-        curl -v http://127.0.0.1:8080/
-
-        echo ""
-        echo "HTTP server test successful."
-      displayName: 'Test HTTP access'
-
-    # --------------------------------------------------------
-    # Display artifact URL
-    # --------------------------------------------------------
-
-    - script: |
-        echo ""
-        echo "===================================================="
-        echo "HTTP ARTIFACT SERVER"
-        echo "===================================================="
-        echo ""
-        echo "HTTP server:"
-        echo "http://127.0.0.1:8080/"
-        echo ""
-        echo "Artifact files:"
-        ls -lah "$(Pipeline.Workspace)/artifact"
-        echo ""
-        echo "IMPORTANT:"
-        echo "127.0.0.1 is accessible only from the build agent."
-        echo "The Microsoft-hosted agent is temporary."
-        echo "===================================================="
-      displayName: 'Display HTTP information'
-
-    # --------------------------------------------------------
-    # Keep server alive for testing
-    # --------------------------------------------------------
-
-    - script: |
-        echo "Keeping HTTP server alive for 10 minutes..."
-        sleep 600
-      displayName: 'Keep HTTP server running'
+          Write-Host ""
+          Write-Host "=================================================="
